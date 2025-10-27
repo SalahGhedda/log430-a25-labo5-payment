@@ -24,21 +24,41 @@ def add_payment(request):
         return {"error": str(result)}
     
 def process_payment(payment_id, credit_card_data):
-    """ Process payment with given ID, notify store_manager sytem that the order is paid """
-    # S'il s'agissait d'une véritable API de paiement, nous enverrions les données de la carte de crédit à un payment gateway (ex. Stripe, Paypal) pour effectuer le paiement. Cela pourrait se trouver dans un microservice distinct.
     _process_credit_card_payment(credit_card_data)
 
-    # Si le paiement est réussi, mettre à jour les statut de la commande
-    # Ensuite, faire la mise à jour de la commande dans le Store Manager (en utilisant l'order_id)
     update_result = update_status_to_paid(payment_id)
-    print(f"Updated order {update_result['order_id']} to paid={update_result}")
-    result = {
-        "order_id": update_result["order_id"],
-        "payment_id": update_result["payment_id"],
-        "is_paid": update_result["is_paid"]
-    }
+    error_from_payment_update = update_result.get("error")
+    if error_from_payment_update:
+        raise RuntimeError(str(error_from_payment_update))
 
-    return result
+    order_id = update_result.get("order_id")
+    if order_id is None:
+        raise RuntimeError("Missing order_id returned by payment update.")
+    is_paid = bool(update_result.get("is_paid", True))
+    payload = {
+        "order_id": order_id,
+        "is_paid": is_paid
+    }
+    try:
+        response = requests.put(
+            "http://api-gateway:8080/store-api/orders",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=5
+        )
+        response.raise_for_status()
+        response_payload = response.json()
+        store_manager_update = response_payload.get("updated", True)
+    except requests.RequestException as exception:
+        raise RuntimeError("Failed to update order status in Store Manager.") from exception
+    except ValueError:
+        store_manager_update = True
+    return {
+        "order_id": order_id,
+        "payment_id": update_result.get("payment_id", payment_id),
+        "is_paid": is_paid,
+        "store_manager_update": store_manager_update
+    }
     
 def _process_credit_card_payment(payment_data):
     """ Placeholder method for simulated credit card payment """
